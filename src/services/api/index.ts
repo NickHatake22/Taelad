@@ -123,25 +123,46 @@ export type UpsertCredentialPayload = {
 };
 
 /** =======================
- *  Tipos Referidos
+ *  Tipos Referidos / Ganancias
  * ======================= */
+export type GananciaStatus = "pendiente" | "confirmada" | "pagada" | "rechazada";
+export type GananciaTipo = "comision" | "bono" | "reversa" | "otro";
+
+/** Refleja tu tabla `ganancias` (captura) */
 export type Ganancia = {
   id: number;
   user_id: number;
+
+  // Campos del esquema nuevo
+  nombre_referido?: string | null;
+  sistema?: string | null;
+  nombre_producto?: string | null;
+  costo_producto?: string | number | null;
+  tipo: GananciaTipo;
+  porcentaje_comision?: string | number | null;
+
+  // Compatibilidad hacia atrás
   referido_id?: number | null;
   codigo_referencia?: string | null;
-  sistema?: string | null;
-  origen?: string | null;
   producto_id?: number | null;
-  producto_nombre?: string | null;
-  monto: string;
-  tipo: "comision" | "bono" | "reversa" | "otro";
-  status: "pendiente" | "confirmada" | "pagada" | "rechazada";
+  producto_nombre?: string | null; // fallback
+  origen?: string | null;
+
+  // Importes y estado
+  monto: string | number;
+  status: GananciaStatus;
+
+  // Fechas nuevas
+  fecha_registro?: string | null;
+  fecha_pago?: string | null;
+
+  // Metadatos
   meta?: any;
   referencia_externa?: string | null;
   fecha_pago_esperada?: string | null;
-  created_at?: string;
-  updated_at?: string;
+
+  created_at?: string | null;
+  updated_at?: string | null;
 };
 
 export type RetiroGanancia = {
@@ -174,14 +195,13 @@ export const API_ROUTES = {
   users: {
     me: "/user",
   },
-  // 🔹 NUEVO: grupo account
   account: {
-    profile: "/account/profile", // GET (mostrar), PUT/POST (actualizar/subir foto)
-    password: "/account/password", // PUT
-    fiscal: "/account/fiscal", // GET/PUT
-    business: "/account/business", // GET/PUT
-    credentials: "/account/credentials", // GET (lista) / POST (upsert)
-    credentialBySystem: (system: SystemKey) => `/account/credentials/${system}`, // GET / DELETE
+    profile: "/account/profile",
+    password: "/account/password",
+    fiscal: "/account/fiscal",
+    business: "/account/business",
+    credentials: "/account/credentials",
+    credentialBySystem: (system: SystemKey) => `/account/credentials/${system}`,
   },
   productos: {
     root: "/productos",
@@ -191,16 +211,26 @@ export const API_ROUTES = {
     root: "/historial-compras",
     byUser: (userId: number | string) => `/historial-compras?user_id=${userId}`,
   },
+
+  // Rutas previas de "referidos"
   referidos: {
     asignarCodigo: (userId: number | string) => `/referidos/asignar-codigo/${userId}`,
     regenerarCodigo: (userId: number | string) => `/referidos/regenerar-codigo/${userId}`,
-    ganancias: "/referidos/ganancias",
+    ganancias: "/referidos/ganancias", // <- ya NO la usamos, pero la dejamos
     retiros: "/referidos/retiros",
   },
+
+  // Tus rutas reales de ganancias (resource)
+  ganancias: {
+    root: "/ganancias",
+    byId: (id: number | string) => `/ganancias/${id}`,
+  },
+
   external: {
     whatsappSend: "https://telorecargo.com/api/enviar-documentos-whatsapp",
   },
 } as const;
+
 
 /** =======================
  *  Auth services
@@ -345,7 +375,50 @@ export const historialApi = {
 };
 
 /** =======================
- *  Referidos services
+ *  Ganancias services (RUTA REAL)
+ * ======================= */
+export const gananciasApi = {
+  // Serializamos a mano para evitar "?user id=1&per_page-500"
+  list: (raw?: {
+    id_user?: number | string;
+    status?: string;
+    sistema?: string;
+    tipo?: string;
+    per_page?: number;
+    page?: number;
+  }) => {
+    const params: Record<string, any> = {
+      id_user: raw?.id_user,
+      status: raw?.status,
+      sistema: raw?.sistema,
+      tipo: raw?.tipo,
+      per_page: Number.isFinite(raw?.per_page as any) ? Number(raw?.per_page) : undefined,
+      page: Number.isFinite(raw?.page as any) ? Number(raw?.page) : undefined,
+    };
+    Object.keys(params).forEach((k) => (params[k] == null) && delete params[k]);
+
+    const qs = new URLSearchParams();
+    Object.entries(params).forEach(([k, v]) => qs.append(k, String(v)));
+
+    const url = qs.toString()
+      ? `${API_ROUTES.ganancias.root}?${qs.toString()}`
+      : API_ROUTES.ganancias.root;
+
+    return axiosClient.get<ApiResponse<{ data: Ganancia[]; total?: number; pagination?: { current_page: number; last_page: number } }>>(url);
+  },
+
+  get: (id: number | string) =>
+    axiosClient.get<ApiResponse<Ganancia>>(API_ROUTES.ganancias.byId(id)),
+
+  create: (payload: Omit<Ganancia, "id" | "created_at" | "updated_at">) =>
+    axiosClient.post<ApiResponse<Ganancia>>(API_ROUTES.ganancias.root, payload),
+
+  remove: (id: number | string) =>
+    axiosClient.delete<ApiResponse<unknown>>(API_ROUTES.ganancias.byId(id)),
+};
+
+/** =======================
+ *  Referidos services (solo lo que no es ganancias)
  * ======================= */
 export const referidosApi = {
   asignarCodigo: (userId: number | string) =>
@@ -358,17 +431,25 @@ export const referidosApi = {
       API_ROUTES.referidos.regenerarCodigo(userId)
     ),
 
-  verGanancias: (params?: {
+  // Proxy a /ganancias para compatibilidad
+  verGanancias: (raw?: {
+    id_user?: number | string;
     user_id?: number | string;
-    status?: "pendiente" | "confirmada" | "pagada" | "rechazada";
+    status?: GananciaStatus;
     sistema?: string;
-    tipo?: "comision" | "bono" | "reversa" | "otro";
+    tipo?: GananciaTipo;
     per_page?: number;
     page?: number;
-  }) =>
-    axiosClient.get<
-      ApiResponse<{ data: Ganancia[]; total?: number; pagination?: { current_page: number; last_page: number } }>
-    >(API_ROUTES.referidos.ganancias, { params }),
+  }) => {
+    return gananciasApi.list({
+      id_user: raw?.id_user ?? raw?.user_id,
+      status: raw?.status,
+      sistema: raw?.sistema,
+      tipo: raw?.tipo,
+      per_page: raw?.per_page,
+      page: raw?.page,
+    });
+  },
 
   verRetiros: (params?: {
     user_id?: number | string;
