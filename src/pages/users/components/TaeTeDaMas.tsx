@@ -4,7 +4,8 @@ import {
   Grid, Card, CardContent, Typography, Stack, Chip, Button, Box,
   Divider, Snackbar, Alert, IconButton, Tooltip, CircularProgress,
   Dialog, DialogTitle, DialogContent, DialogActions, FormControlLabel, Checkbox,
-  Table, TableBody, TableCell, TableHead, TableRow, TableContainer, Paper, Pagination
+  Table, TableBody, TableCell, TableHead, TableRow, TableContainer, Paper, Pagination,
+  TextField
 } from "@mui/material";
 import WorkspacePremiumIcon from "@mui/icons-material/WorkspacePremium";
 import PercentIcon from "@mui/icons-material/Percent";
@@ -16,7 +17,6 @@ import MonetizationOnIcon from "@mui/icons-material/MonetizationOn";
 import AssignmentTurnedInIcon from "@mui/icons-material/AssignmentTurnedIn";
 import WhatsAppIcon from "@mui/icons-material/WhatsApp";
 import FacebookIcon from "@mui/icons-material/Facebook";
-import OpenInNewIcon from "@mui/icons-material/OpenInNew";
 import Page from "./Page";
 import { usersApi, referidosApi, type Ganancia, type RetiroGanancia } from "../../../services/api";
 
@@ -62,12 +62,31 @@ function pct(n: string | number | null | undefined) {
 function fmtDate(d?: string | null) {
   return d ? d.slice(0, 10) : "—";
 }
+function yyyymm(d: Date) {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+}
+function monthKeyFromStr(s?: string | null) {
+  if (!s) return "";
+  const date = new Date(s);
+  if (isNaN(+date)) return (s || "").slice(0, 7);
+  return yyyymm(date);
+}
+function daysBetween(from?: string | null) {
+  if (!from) return Infinity;
+  const d1 = new Date(from);
+  if (isNaN(+d1)) return Infinity;
+  const now = new Date();
+  const ms = now.getTime() - d1.getTime();
+  return Math.floor(ms / (1000 * 60 * 60 * 24));
+}
 
-// Status sets
-const STATUS_OK = new Set(["pagada", "confirmada"]);
-const STATUS_BAD = new Set(["rechazada"]);
+// Status sets (incluye variantes comunes)
+const STATUS_OK = new Set(["pagada", "pagado", "confirmada", "confirmado", "aprobada", "aprobado"]);
+const STATUS_BAD = new Set(["rechazada", "rechazado", "cancelada", "cancelado"]);
+const isOk = (s?: string) => STATUS_OK.has(String(s || "").toLowerCase().trim());
+const isBad = (s?: string) => STATUS_BAD.has(String(s || "").toLowerCase().trim());
 const colorForStatus = (s?: string) => {
-  const st = (s || "").toLowerCase();
+  const st = (s || "").toLowerCase().trim();
   if (STATUS_OK.has(st)) return "success";
   if (STATUS_BAD.has(st)) return "error";
   return "warning"; // pendiente / otros
@@ -88,6 +107,10 @@ export default function TaeTeDaMas() {
   const [me, setMe] = useState<{ id: number; name: string; codigo_ref?: string | null } | null>(null);
   const [loadingUser, setLoadingUser] = useState(true);
   const [codigo, setCodigo] = useState<string | null>(null);
+
+  // Filtro por mes (detalles)
+  const currentMonth = useMemo(() => yyyymm(new Date()), []);
+  const [monthFilter, setMonthFilter] = useState<string>(currentMonth);
 
   const links = useMemo(() => ({
     mtlmx: linkWithRef(URLS_BASE.MTLMX, codigo),
@@ -165,7 +188,7 @@ export default function TaeTeDaMas() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [me?.id]);
 
-  // 🔔 ACTUALIZAR EN VIVO: escuchar broadcastAuthUserChange (evento "auth:user-changed")
+  // 🔔 ACTUALIZAR EN VIVO
   useEffect(() => {
     const handler = () => fetchHistoriales(pagG.page, pagR.page);
     window.addEventListener("auth:user-changed", handler as EventListener);
@@ -203,12 +226,29 @@ export default function TaeTeDaMas() {
   const shareFacebook = () =>
     window.open(`https://www.facebook.com/sharer/sharer.php?u=${encodeURIComponent(links.mtlmx)}&quote=${encodeURIComponent(promoMsg)}`, "_blank", "noopener,noreferrer");
 
-  // Resumen y total en la página actual
+  // Filtrado por mes
+  const currentMonthKey = currentMonth;
+  const isCurrentMonth = (g: GananciaNew) =>
+    monthKeyFromStr(g.fecha_registro || g.created_at) === currentMonthKey;
+
+  const isSelectedMonth = (g: GananciaNew) =>
+    monthKeyFromStr(g.fecha_registro || g.created_at) === (monthFilter || currentMonthKey);
+
+  // Pending > 14 días
+  const isPendingOld = (g: GananciaNew) => {
+    const st = (g.status || "").toLowerCase().trim();
+    if (isOk(st) || isBad(st)) return false;
+    const d = daysBetween(g.fecha_registro || g.created_at);
+    return d > 14;
+  };
+
+  // Resumen basado en lo que se muestra en la tabla breve (mes actual)
+  const gananciasMesActual = useMemo(() => ganancias.filter(isCurrentMonth), [ganancias]);
   const resumen = useMemo(() => {
-    const toNumber = (x: any) => typeof x === "string" ? parseFloat(x || "0") : (x ?? 0);
+    const toNumber = (x: any) => (typeof x === "string" ? parseFloat(x || "0") : (x ?? 0));
     let ok = 0, pend = 0, bad = 0, total = 0;
-    for (const g of ganancias) {
-      const st = String(g.status || "").toLowerCase();
+    for (const g of gananciasMesActual) {
+      const st = String(g.status || "").toLowerCase().trim();
       const m = toNumber(g.monto);
       if (STATUS_OK.has(st)) ok += m;
       else if (STATUS_BAD.has(st)) bad += m;
@@ -216,7 +256,7 @@ export default function TaeTeDaMas() {
       total += m;
     }
     return { ok, pend, bad, total };
-  }, [ganancias]);
+  }, [gananciasMesActual]);
 
   return (
     <Page title="TAE te da más">
@@ -273,27 +313,64 @@ export default function TaeTeDaMas() {
                       <Button startIcon={<FacebookIcon />} onClick={shareFacebook} variant="contained" sx={{ bgcolor: "#1877F2" }}>Facebook</Button>
                     </Stack>
 
-                    {/* Enlaces con ref */}
-                    <Box sx={{ p: 1.25, borderRadius: 1, bgcolor: `${TAE.blue}0F`, border: `1px dashed ${TAE.blue}55` }}>
-                      <Typography variant="subtitle2" sx={{ mb: .75 }}>Tus enlaces con código</Typography>
-                      {[
-                        { label: "MiTienda", url: links.mtlmx },
-                        { label: "TAEConta", url: links.taeconta },
-                        { label: "TeLoRecargo", url: links.telorecargo },
-                      ].map((row) => (
-                        <Stack key={row.label} direction={{ xs: "column", sm: "row" }} spacing={1} alignItems={{ sm: "center" }} sx={{ mb: 0.75 }}>
-                          <Stack direction="row" spacing={1} alignItems="center" sx={{ flex: 1 }}>
-                            <LinkIcon fontSize="small" />
-                            <Typography variant="body2" sx={{ wordBreak: "break-all" }}>{row.url}</Typography>
-                          </Stack>
-                          <Stack direction="row" spacing={1}>
-                            <Button size="small" onClick={() => copy(row.url, `Link ${row.label} copiado`)} startIcon={<ContentCopyIcon />}>Copiar</Button>
-                            <Button size="small" onClick={() => window.open(row.url, "_blank", "noopener,noreferrer")} startIcon={<OpenInNewIcon />}>Abrir</Button>
-                          </Stack>
+                    {/* Enlaces ocultos como BOTONES por marca */}
+                    <Box sx={{ p: 1.25, borderRadius: 1, bgcolor: `${TAE.blue}0F`, border: `1px dashed ${TAE.blue}55`, mt: 1 }}>
+                      <Typography variant="subtitle2" sx={{ mb: 1, display: "flex", alignItems: "center", gap: .5 }}>
+                        <LinkIcon fontSize="small" /> Enlaces con tu <b>ref</b>
+                      </Typography>
+
+                      <Stack direction={{ xs: "column", sm: "row" }} spacing={1}>
+                        {/* MiTiendaEnLineaMX — amarillo */}
+                        <Stack direction="row" spacing={0.5} alignItems="center">
+                          <Button
+                            variant="contained"
+                            onClick={() => window.open(links.mtlmx, "_blank", "noopener,noreferrer")}
+                            sx={{ bgcolor: "#FFC107", color: "#111", "&:hover": { bgcolor: "#FFB300" }, whiteSpace: "nowrap" }}
+                          >
+                            MiTiendaEnLineaMX
+                          </Button>
+                          <Tooltip title="Copiar enlace">
+                            <IconButton size="small" onClick={() => copy(links.mtlmx, "Link MiTienda copiado")}>
+                              <ContentCopyIcon fontSize="inherit" />
+                            </IconButton>
+                          </Tooltip>
                         </Stack>
-                      ))}
-                      <Typography variant="caption" display="block" sx={{ mt: 0.75 }}>
-                        Comparte tu código cuando te lo soliciten o usa los enlaces directos ya con tu <b>ref</b>.
+
+                        {/* TAEConta — naranja */}
+                        <Stack direction="row" spacing={0.5} alignItems="center">
+                          <Button
+                            variant="contained"
+                            onClick={() => window.open(links.taeconta, "_blank", "noopener,noreferrer")}
+                            sx={{ bgcolor: "#FF6A00", color: "#fff", "&:hover": { bgcolor: "#E65E00" }, whiteSpace: "nowrap" }}
+                          >
+                            TAEConta
+                          </Button>
+                          <Tooltip title="Copiar enlace">
+                            <IconButton size="small" onClick={() => copy(links.taeconta, "Link TAEConta copiado")}>
+                              <ContentCopyIcon fontSize="inherit" />
+                            </IconButton>
+                          </Tooltip>
+                        </Stack>
+
+                        {/* TeLoRecargo — azul */}
+                        <Stack direction="row" spacing={0.5} alignItems="center">
+                          <Button
+                            variant="contained"
+                            onClick={() => window.open(links.telorecargo, "_blank", "noopener,noreferrer")}
+                            sx={{ bgcolor: "#0B57D0", color: "#fff", "&:hover": { bgcolor: "#0A49AF" }, whiteSpace: "nowrap" }}
+                          >
+                            TeLoRecargo
+                          </Button>
+                          <Tooltip title="Copiar enlace">
+                            <IconButton size="small" onClick={() => copy(links.telorecargo, "Link TeLoRecargo copiado")}>
+                              <ContentCopyIcon fontSize="inherit" />
+                            </IconButton>
+                          </Tooltip>
+                        </Stack>
+                      </Stack>
+
+                      <Typography variant="caption" display="block" sx={{ mt: 1 }}>
+                        Usa los botones para <b>abrir</b> o el ícono para <b>copiar</b> tu enlace con código.
                       </Typography>
                     </Box>
                   </>
@@ -307,11 +384,11 @@ export default function TaeTeDaMas() {
             </CardContent>
           </Card>
 
-          {/* Total (se actualiza con auth:user-changed) */}
+          {/* Total (mes actual) */}
           <Card sx={{ mt: 2 }}>
             <CardContent>
               <Stack direction="row" spacing={1} alignItems="center" justifyContent="space-between">
-                <Typography variant="subtitle1" fontWeight={800}>Total de ganancias (página)</Typography>
+                <Typography variant="subtitle1" fontWeight={800}>Total de Ganancias (mes actual)</Typography>
                 <Chip color="primary" label={currency(resumen.total)} />
               </Stack>
               <Stack direction="row" spacing={1} sx={{ mt: 1 }} flexWrap="wrap">
@@ -323,14 +400,14 @@ export default function TaeTeDaMas() {
           </Card>
         </Grid>
 
-        {/* Historial breve */}
+        {/* Historial breve (SOLO mes actual) */}
         <Grid item xs={12} md={7}>
           <Card>
             <CardContent>
               <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ mb: 1 }}>
                 <Stack direction="row" spacing={1} alignItems="center">
                   <MonetizationOnIcon />
-                  <Typography variant="h6" fontWeight={800}>Historial de ganancias</Typography>
+                  <Typography variant="h6" fontWeight={800}>Ganancias (Mes Actual)</Typography>
                 </Stack>
                 <Tooltip title="Recargar">
                   <span>
@@ -353,18 +430,31 @@ export default function TaeTeDaMas() {
                   <TableBody>
                     {loadingTablas ? (
                       <TableRow><TableCell colSpan={5}><Stack direction="row" spacing={1} alignItems="center"><CircularProgress size={16} />Cargando…</Stack></TableCell></TableRow>
-                    ) : ganancias.length === 0 ? (
+                    ) : gananciasMesActual.length === 0 ? (
                       <TableRow><TableCell colSpan={5}>Sin registros</TableCell></TableRow>
                     ) : (
-                      ganancias.map((g) => (
-                        <TableRow key={g.id}>
-                          <TableCell>{fmtDate(g.fecha_registro || g.created_at)}</TableCell>
-                          <TableCell>{g.sistema || "—"}</TableCell>
-                          <TableCell>{g.nombre_producto || (g as any).producto_nombre || (g as any).origen || "—"}</TableCell>
-                          <TableCell align="right">{currency(g.monto)}</TableCell>
-                          <TableCell><Chip size="small" label={g.status} color={colorForStatus(g.status)} /></TableCell>
-                        </TableRow>
-                      ))
+                      gananciasMesActual.map((g) => {
+                        const oldPend = isPendingOld(g);
+                        return (
+                          <TableRow
+                            key={g.id}
+                            sx={oldPend ? { bgcolor: "#ffebee" /* rojo muy clarito */ } : undefined}
+                          >
+                            <TableCell>{fmtDate(g.fecha_registro || g.created_at)}</TableCell>
+                            <TableCell>{g.sistema || "—"}</TableCell>
+                            <TableCell>{g.nombre_producto || (g as any).producto_nombre || (g as any).origen || "—"}</TableCell>
+                            <TableCell align="right">{currency(g.monto)}</TableCell>
+                            <TableCell>
+                              <Chip
+                                size="small"
+                                label={g.status}
+                                color={colorForStatus(g.status)}
+                                variant={oldPend ? "outlined" : "filled"}
+                              />
+                            </TableCell>
+                          </TableRow>
+                        );
+                      })
                     )}
                   </TableBody>
                 </Table>
@@ -382,11 +472,22 @@ export default function TaeTeDaMas() {
         </Grid>
       </Grid>
 
-      {/* 🧾 Tabla APARTE: Ganancias (detalle) */}
+      {/* 🧾 Tabla APARTE: Ganancias (detalle) con filtro por MES */}
       <Card sx={{ mt: 2 }}>
         <CardContent>
-          <Typography variant="h6" fontWeight={800} sx={{ mb: 1 }}>Ganancias (detalle)</Typography>
+          <Stack direction={{ xs: "column", sm: "row" }} justifyContent="space-between" alignItems={{ xs: "flex-start", sm: "center" }} sx={{ mb: 1 }} spacing={1}>
+            <Typography variant="h6" fontWeight={800}>Mas Detalles de tus Ganancias</Typography>
+            <TextField
+              label="Mes"
+              type="month"
+              size="small"
+              value={monthFilter}
+              onChange={(e) => setMonthFilter(e.target.value)}
+              inputProps={{ max: yyyymm(new Date()) }}
+            />
+          </Stack>
           <Divider sx={{ mb: 1 }} />
+
           <TableContainer component={Paper} sx={{ maxHeight: 420 }}>
             <Table size="small" stickyHeader>
               <TableHead>
@@ -410,23 +511,36 @@ export default function TaeTeDaMas() {
                       <Stack direction="row" spacing={1} alignItems="center"><CircularProgress size={16} />Cargando…</Stack>
                     </TableCell>
                   </TableRow>
-                ) : ganancias.length === 0 ? (
+                ) : ganancias.filter(isSelectedMonth).length === 0 ? (
                   <TableRow><TableCell colSpan={10}>Sin registros</TableCell></TableRow>
                 ) : (
-                  ganancias.map((g) => (
-                    <TableRow key={g.id}>
-                      <TableCell>{fmtDate(g.fecha_registro || g.created_at)}</TableCell>
-                      <TableCell>{g.nombre_referido || "—"}</TableCell>
-                      <TableCell>{g.sistema || "—"}</TableCell>
-                      <TableCell>{g.nombre_producto || (g as any).producto_nombre || (g as any).origen || "—"}</TableCell>
-                      <TableCell align="right">{currency(g.costo_producto)}</TableCell>
-                      <TableCell>{g.tipo || "—"}</TableCell>
-                      <TableCell align="right">{pct(g.porcentaje_comision)}</TableCell>
-                      <TableCell align="right">{currency(g.monto)}</TableCell>
-                      <TableCell><Chip size="small" label={g.status} color={colorForStatus(g.status)} /></TableCell>
-                      <TableCell>{fmtDate(g.fecha_pago)}</TableCell>
-                    </TableRow>
-                  ))
+                  ganancias.filter(isSelectedMonth).map((g) => {
+                    const oldPend = isPendingOld(g);
+                    return (
+                      <TableRow
+                        key={g.id}
+                        sx={oldPend ? { bgcolor: "#ffebee" } : undefined}
+                      >
+                        <TableCell>{fmtDate(g.fecha_registro || g.created_at)}</TableCell>
+                        <TableCell>{g.nombre_referido || "—"}</TableCell>
+                        <TableCell>{g.sistema || "—"}</TableCell>
+                        <TableCell>{g.nombre_producto || (g as any).producto_nombre || (g as any).origen || "—"}</TableCell>
+                        <TableCell align="right">{currency(g.costo_producto)}</TableCell>
+                        <TableCell>{g.tipo || "—"}</TableCell>
+                        <TableCell align="right">{pct(g.porcentaje_comision)}</TableCell>
+                        <TableCell align="right">{currency(g.monto)}</TableCell>
+                        <TableCell>
+                          <Chip
+                            size="small"
+                            label={g.status}
+                            color={colorForStatus(g.status)}
+                            variant={oldPend ? "outlined" : "filled"}
+                          />
+                        </TableCell>
+                        <TableCell>{fmtDate(g.fecha_pago)}</TableCell>
+                      </TableRow>
+                    );
+                  })
                 )}
               </TableBody>
             </Table>
@@ -466,7 +580,7 @@ export default function TaeTeDaMas() {
                       <TableCell>{r.referencia_pago || "—"}</TableCell>
                       <TableCell align="right">{currency(r.monto)}</TableCell>
                       <TableCell>
-                        <Chip size="small" label={r.status} color={r.status === "pagado" ? "success" : r.status === "rechazado" ? "error" : "warning"} />
+                        <Chip size="small" label={r.status} color={colorForStatus(r.status)} />
                       </TableCell>
                     </TableRow>
                   ))
