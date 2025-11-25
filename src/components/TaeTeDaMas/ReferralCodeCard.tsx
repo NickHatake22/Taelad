@@ -391,6 +391,7 @@ function RowLink({ label, color, textColor, url, onCopy }: RowLinkProps) {
           textTransform: "none",
         }}
       >
+        
         {label}
       </Button>
       <Tooltip title="Copiar enlace">
